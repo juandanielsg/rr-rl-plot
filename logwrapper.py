@@ -201,7 +201,7 @@ class LogReader():
 
         if isinstance(rewards[0], dict):
 
-            print([reward[reward_type] for reward in rewards])
+            #print([reward[reward_type] for reward in rewards])
 
             return min([reward[reward_type] for reward in rewards])[0], max([reward[reward_type] for reward in rewards])[0]
         
@@ -278,10 +278,11 @@ class Plotter():
         obstacle = [-observations[0]["obstacle"][1], observations[0]["obstacle"][0]]
 
 
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(16,9))
 
         ax.axis("equal")
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
+        
 
         obs = Circle(obstacle, radius=0.2)
         goalcircle = Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5)
@@ -308,8 +309,20 @@ class Plotter():
             fig.colorbar(lc, ax=ax, label="goal reward")
 
         plt.title("Trajectory for episode " + str(idx))
+
         plt.show()
+        #return ax
         pass
+
+    
+    def plot_both(self):
+
+        self.plot_trajectory(observations, rewards, idx, type = "reward", val_min = val_min, val_max=val_max)
+        self.plot_trajectory(observations, rewards, idx, type = "obstacle", val_min = obstacle_val_min, val_max = obstacle_val_max)
+
+        plt.title("Trajectory for episode " + str(idx))
+
+        plt.show()
 
 
 
@@ -389,7 +402,7 @@ if __name__ == "__main__":
     val_min, val_max = datalog.get_max_rewards(reward_type="reward")
     plotme = Plotter()
 
-    for idx in range(13, 17): #len(datalog.classified_raw_data)+1):
+    for idx in range(25, 26): #len(datalog.classified_raw_data)+1):
         actions, rewards, observations = datalog.study_episode(idx)
         #print(rewards)
         plotme.plot_rewards(rewards, idx)
