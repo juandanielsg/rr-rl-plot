@@ -71,7 +71,7 @@ def get_reward_hourglass(
 
 
 
-def create_reward_bowtie(
+def create_reward_bowtie_old(
     x: np.ndarray,
     y: np.ndarray,
     goal: np.ndarray,
@@ -111,6 +111,48 @@ def create_reward_bowtie(
     return reward
 
 
+
+
+def create_reward_bowtie(
+    x: np.ndarray,
+    y: np.ndarray,
+    goal: np.ndarray,
+    error_bias: np.ndarray,
+    epsilon: float = 1e-6,
+) -> np.ndarray:
+    """
+    Goal reward with a bowtie-shaped iso-reward contour.
+
+    Implements: reward = -(abs(dx) * dy^4/dx^4 + abs(dx/3))
+
+    The bowtie shape narrows to a point at the goal along the x-axis and
+    widens along the y-axis, creating two symmetric lobes. Points directly
+    above/below the goal are penalised more heavily than points to the side
+    at the same distance.
+
+    Args:
+        x, y:       Meshgrid (or scalar) robot positions.
+        goal:       [gx, gy] goal position.
+        error_bias: [bx, by] per-axis scaling applied to the displacement.
+        epsilon:    Small constant to avoid division by zero when dx == 0.
+
+    Returns:
+        Array of the same shape as x/y with reward values <= 0.
+        Zero only at the goal; more negative further away.
+    """
+    gx, gy = goal
+
+    dx = gx - x
+    dy = gy - y
+
+    #reward = -(np.abs(dy_s) * dx_s ** 16 / (dy_s ** 16 + epsilon) + np.abs(dy_s / 3.0))
+    first_term = np.sqrt(dy**2 / 3 + epsilon) - epsilon**2
+    #first_term = 0.1
+    second_term = 3*np.maximum(0, np.abs(dx) - np.abs(dy))
+    reward = -(first_term + second_term)
+    return reward
+
+
 def reward_obstacle(
     x: np.ndarray,
     y: np.ndarray,
@@ -141,15 +183,23 @@ def reward_obstacle_reverse_ellipse(
     obstacle: Tuple[float, float],
     radius: float = 1.0,
     error_bias: list = None,
+    goal: Tuple[float, float] = None,
 ) -> np.ndarray:
     """
     Soft penalty: zero outside the obstacle radius, negative gradient inside.
+
+    The ellipse is oriented along the obstacle→goal direction when `goal` is
+    provided: error_bias[0] scales the along-goal axis and error_bias[1]
+    scales the perpendicular axis.  When `goal` is None the axes are
+    world-aligned (original behaviour).
 
     Args:
         x, y:        Meshgrid arrays of robot positions relative to origin.
         obstacle:    (ox, oy) obstacle centre position.
         radius:      Collision radius around the obstacle.
-        error_bias:  Per-axis scaling factors [sx, sy] for elliptical distance.
+        error_bias:  Per-axis scaling factors [s_along_goal, s_perp] for
+                     elliptical distance.
+        goal:        (gx, gy) goal position used to orient the ellipse.
 
     Returns:
         Array of the same shape as x/y with 0.0 outside and a negative
@@ -159,19 +209,27 @@ def reward_obstacle_reverse_ellipse(
         error_bias = [1.0, 1.0]
 
     ox, oy = obstacle
-    diff = np.array([
-        (ox - x) * error_bias[0],
-        (oy - y) * error_bias[1],
-    ])
+    dx = ox - x
+    dy = oy - y
 
-    #d_act = np.linalg.norm(diff, axis=0)
+    if goal is not None:
+        gx, gy = goal
+        angle = np.arctan2(gy - oy, gx - ox)
+        c, s = np.cos(angle), np.sin(angle)
+        # rotate into obstacle→goal frame
+        dx_r =  c * dx + s * dy
+        dy_r = -s * dx + c * dy
+    else:
+        dx_r, dy_r = dx, dy
+
+    diff = np.array([dx_r * error_bias[0], dy_r * error_bias[1]])
     d_act = np.sqrt(diff[0] ** 2 + diff[1] ** 2)
     threshold = np.linalg.norm([i * radius for i in error_bias])
 
+    reward = (d_act / np.where(threshold==0, 1e-9, threshold)) - 1.0
+
     condition = d_act >= threshold
-    reward = (d_act / np.where(threshold == 0, 1e-9, threshold)) - 1.0
-    #return np.where(condition, 0.0, reward)
-    return np.where(condition, 0.0, -1.0)
+    return np.where(condition, 0.0, reward)
 
 
 def combined_reward(
@@ -244,7 +302,7 @@ def plot_reward_heatmap(
     if error_bias is None:
         error_bias = [2.0, 1.0]
 
-    GOAL_BIAS = np.array([1.0, 3.0])
+    GOAL_BIAS = np.array([1.0, 2.0])
 
     # ------------------------------------------------------------------ layout
     fig = plt.figure(figsize=figsize)
@@ -315,7 +373,8 @@ def plot_reward_heatmap(
 
         rg = reward_fn(X_r, Y_r, goal_r, error_bias=GOAL_BIAS)
         ro = reward_obstacle_reverse_ellipse(X, Y, tuple(state['obstacle']),
-                                             error_bias=[_bx, _by], radius=_radius)
+                                             error_bias=[_bx, _by], radius=_radius,
+                                             goal=tuple(state['goal']))
         R  = _c1 * rg + _c2 * ro
         _lo = obs_penalty
         _hi = _clip if _clip > _lo else _lo + 1e-3
@@ -327,15 +386,17 @@ def plot_reward_heatmap(
         _by     = sl_by.val
         _radius = sl_radius.val
         _obs    = state['obstacle']
+        _goal   = state['goal']
 
         if state[ell_key] is not None:
             state[ell_key].remove()
         thr = np.linalg.norm([_bx * _radius, _by * _radius])
+        angle_deg = np.degrees(np.arctan2(_goal[1] - _obs[1], _goal[0] - _obs[0]))
         ell = Ellipse(
             xy=_obs,
             width=2 * thr / _bx,
             height=2 * thr / _by,
-            angle=0,
+            angle=angle_deg,
             edgecolor='none', facecolor='none',
             linewidth=1.5, linestyle='--', zorder=5,
         )
@@ -353,17 +414,19 @@ def plot_reward_heatmap(
         _obs    = state['obstacle']
         _goal   = state['goal']
 
+        mid = resolution // 2
         for ax_, im_, ell_key, obs_mkr_key, goal_mkr_key, reward_fn, label in [
             (ax_l, im_l, 'obs_ellipse_l', 'obs_marker_l', 'goal_marker_l', create_reward_bowtie, 'Bowtie'),
             (ax_r, im_r, 'obs_ellipse_r', 'obs_marker_r', 'goal_marker_r', get_reward_hourglass, 'Hourglass'),
         ]:
             R = _compute(reward_fn)
+            r_robot = R[mid, mid]
             im_.set_data(R)
             im_.set_clim(R.min(), R.max())
             _update_overlay(ax_, ell_key, obs_mkr_key)
             state[goal_mkr_key].set_data([_goal[0]], [_goal[1]])
             ax_.set_title(
-                f"{label}  |  r = {_c1:.2f}·rg + {_c2:.2f}·ro\n"
+                f"{label}  |  r = {_c1:.2f}·rg + {_c2:.2f}·ro  |  r(robot) = {r_robot:.3f}\n"
                 f"goal=({_goal[0]:.2f},{_goal[1]:.2f})  |  "
                 f"obs=({_obs[0]:.2f},{_obs[1]:.2f})  |  "
                 f"r={_radius:.2f}  bias=[{_bx:.1f},{_by:.1f}]",
@@ -378,7 +441,8 @@ def plot_reward_heatmap(
     def _init_R(reward_fn):
         rg = reward_fn(X, Y, tuple(state['goal']), error_bias=GOAL_BIAS)
         ro = reward_obstacle_reverse_ellipse(X, Y, tuple(state['obstacle']),
-                                             error_bias=error_bias, radius=obs_radius)
+                                             error_bias=error_bias, radius=obs_radius,
+                                             goal=tuple(state['goal']))
         return np.clip(c1 * rg + c2 * ro, _lo0, _hi0)
 
     R0_l = _init_R(create_reward_bowtie)
@@ -430,10 +494,13 @@ def plot_reward_heatmap(
         state[obs_mkr_key]  = obs_m
         state[goal_mkr_key] = goal_m
 
+        _obs0  = state['obstacle']
+        _goal0 = state['goal']
+        angle_deg0 = np.degrees(np.arctan2(_goal0[1] - _obs0[1], _goal0[0] - _obs0[0]))
         ell0 = Ellipse(
-            xy=state['obstacle'],
+            xy=_obs0,
             width=2 * half_x0, height=2 * half_y0,
-            angle=0, edgecolor='none', facecolor='none',
+            angle=angle_deg0, edgecolor='none', facecolor='none',
             linewidth=1.5, linestyle='--', zorder=5,
         )
         ax_.add_patch(ell0)
@@ -446,16 +513,7 @@ def plot_reward_heatmap(
         ax_.set_aspect('equal')
         ax_.legend(loc='upper left', fontsize=9)
 
-    ax_l.set_title(
-        f"Bowtie  |  r = {c1:.2f}·rg + {c2:.2f}·ro\n"
-        f"goal={goal}  |  obstacle={obstacle}  |  radius={obs_radius:.2f}  |  bias={error_bias}",
-        fontsize=9,
-    )
-    ax_r.set_title(
-        f"Hourglass  |  r = {c1:.2f}·rg + {c2:.2f}·ro\n"
-        f"goal={goal}  |  obstacle={obstacle}  |  radius={obs_radius:.2f}  |  bias={error_bias}",
-        fontsize=9,
-    )
+    _redraw()
 
     # -------------------------------------------- slider callbacks
     for sl in (sl_c1, sl_c2, sl_radius, sl_bx, sl_by, sl_clip):

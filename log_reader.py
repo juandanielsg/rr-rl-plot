@@ -1,3 +1,5 @@
+import io
+import os
 import numpy as np
 import json
 import matplotlib.pyplot as plt
@@ -6,7 +8,11 @@ from matplotlib.patches import Circle
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from my_custom_markers import CustomMarkers
+from pathlib import Path
 from typing import OrderedDict
+from PIL import Image
+
+SUCCESS_RADIUS = 0.20
 
 
 class LogReader():
@@ -77,10 +83,8 @@ class LogReader():
     def process_observation(self, observation):
         if isinstance(observation, dict):
             observation = observation["observation"][0]
-        try:
+        if isinstance(observation[0], (list, np.ndarray)):
             observation = observation[0]
-        except:
-            pass
         return {
             "robot_position":        observation[0:2],
             "goal":                  observation[2:4],
@@ -95,9 +99,10 @@ class LogReader():
 
     def process_step(self, step):
         observation, action, reward = step
+        action = action[0] if isinstance(action[0], (list, np.ndarray)) else action
         return {
             "observation": self.processing_function(observation),
-            "action":      [action[0][0], action[0][1]],
+            "action":      [action[0], action[1]],
             "reward":      reward,
         }
 
@@ -109,7 +114,28 @@ class LogReader():
             actions.append(step["action"])
             rewards.append(step["reward"])
             observations.append(step["observation"])
-        return actions, rewards, observations
+
+        # The log appends the reset observation (robot back to ~[0,0], new goal) as the
+        # last line before the next "Episode" marker.  Strip it when present so that
+        # observations[-1] is always the true final step of this episode.
+        if len(observations) > 1 and not np.allclose(
+            observations[-1]["goal"], observations[0]["goal"]
+        ):
+            observations = observations[:-1]
+            actions = actions[:-1]
+            rewards = rewards[:-1]
+
+        last = observations[-1]
+        rx, ry = last["robot_position"]
+        gx, gy = last["goal"]
+
+        print("Ep jump")
+        print(rx, ry)
+        print(gx, gy)
+        print(np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2))
+        success = np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2) < SUCCESS_RADIUS
+
+        return actions, rewards, observations, success
 
     def study_all(self):
         for i in range(1, len(self.classified_raw_data) + 1):
@@ -126,207 +152,6 @@ class LogReader():
             min(reward for reward in rewards)[0],
             max(reward for reward in rewards)[0],
         )
-class LogReader():
-
-    def __init__(self, filename, type="workshop"):
-
-        self.filename = filename
-        self.raw_data = self.extract_raw_data()
-        self.classified_raw_data = self.separate_data()
-        self.process_data()
-        self.type = type
-
-        self.processing_functions = {"workshop": self.process_observation_workshop, "maneuvernet": self.process_observation}
-        self.processing_function = self.processing_functions[self.type]
-
-        self.data = []
-
-    
-    def extract_raw_data(self):
-        with open("logs/" + self.filename) as file:
-            return file.readlines()
-    
-
-    def separate_data(self):
-
-        classified_raw_data = []
-        episode = None
-        for line in self.raw_data:
-            if line.find("Episode") != -1:
-                if episode is not None:
-                    classified_raw_data.append(episode)
-                episode = []
-            
-            else:
-                episode.append(line.replace("\n",""))
-
-        #Adds last episode to the list
-        classified_raw_data.append(episode)
-
-        return classified_raw_data
-    
-    def process_data(self):
-
-        for i in range(len(self.classified_raw_data)):
-
-            for j in range(len(self.classified_raw_data[i])):
-                
-                current_line = self.classified_raw_data[i][j]
-
-                #print(current_line)
-
-                current_line = current_line.split("-/-")
-
-                
-
-                # Now we have a state, action and reward in this order
-                self.classified_raw_data[i][j] = [self.process_datum(datum) for datum in current_line]
-
-        
-        
-
-    def process_datum(self, datum):
-
-        try:
-
-            return json.loads(datum)
-        
-        except:
-
-            datum = datum.replace("[", "").replace("]","").replace(" ","")
-            datum = datum.split(",")
-            datum = [float(element) for element in datum]
-            return datum
-        
-    def process_observation_workshop(self, observation):
-
-        """ obs = np.concatenate(
-            (
-                obstacle,
-                goal,
-                robot_position,
-                rr100_wheel_velocities,
-                rr100_steering_angles,
-                rr100_steering_velocities,
-                robot_velocity,
-                mobile_base_orientation,
-                mobile_base_angular,
-            )"""
-
-        #print(observation)
-        observation = observation["observation"][0]
-        
-
-        obs = {"obstacle": observation[14:16],
-               "goal": observation[0:2],
-               "robot_position": observation[2:4],
-               "wheel_velocities": observation[4:6],
-               "steering_angles": observation[6:8],
-               "steering_velocities": observation[8:10],
-               "robot_velocity": observation[10:12],
-               "mobile_base_orientation": observation[12],
-               "mobile_base_angular": observation[13]}
-
-        return obs
-        
-        
-    def process_observation(self, observation):
-
-        """obs = np.concatenate(
-            (
-                robot_position,
-                goal[:2],
-                rr100_wheel_velocities,
-                rr100_steering_angles,
-                rr100_steering_velocities,
-                robot_velocity,
-                mobile_base_orientation,
-                mobile_base_angular,
-                # [self.distance_to_obstacle, 0.2],  # distance, obstacle radius
-                self.obstacle,
-                
-            )"""
-
-        if isinstance(observation, dict):
-
-            observation = observation["observation"][0]
-
-        try:
-            a = observation[0][0]
-            observation = observation[0]
-        except:
-            pass
-
-        obs = {"robot_position": observation[0:2],
-               "goal": observation[2:4],
-               "wheel_velocities": observation[4:6],
-               "steering_angles": observation[6:8],
-               "steering_velocities": observation[8:10],
-               "robot_velocity": observation[10:12],
-               "mobile_base_orientation": observation[12],
-               "mobile_base_angular": observation[13],
-               "obstacle": [observation[14], observation[15]]}
-        
-        return obs
-
-        
-            
-    def process_step(self, step):
-
-        observation, action, reward = step
-        #print(step)
-
-        step = {"observation": self.processing_function(observation),
-                "action": [action[0][0], action[0][1]],
-                "reward": reward}
-
-        return step
-
-    
-
-    def study_episode(self, idx):
-
-        episode = self.classified_raw_data[idx-1]
-
-        actions = []
-        rewards = []
-        observations = []
-
-        for step in episode:
-
-            step = self.process_step(step)
-            actions.append(step["action"])
-            rewards.append(step["reward"])
-            observations.append(step["observation"])
-
-
-        return actions, rewards, observations
-
-    def study_all(self):
-
-        for i in range(1, len(self.classified_raw_data)+1):
-
-            self.data.append(self.study_episode(i))
-    
-    def get_max_rewards(self, reward_type):
-
-        rewards = []
-
-        rewards = [data[1] for data in self.data]
-        rewards = [reward for episode in rewards for reward in episode]
-
-
-
-        if isinstance(rewards[0], dict):
-
-            print([reward[reward_type] for reward in rewards])
-
-            return min([reward[reward_type] for reward in rewards])[0], max([reward[reward_type] for reward in rewards])[0]
-        
-        
-        else:
-
-            return min([reward for reward in rewards])[0], max([reward for reward in rewards])[0]
 
 
 class Plotter():
@@ -401,7 +226,7 @@ class Plotter():
             cmap="jet", linewidth=3, val_min=val_min, val_max=val_max,
         )
         plt.scatter(positions_y[0], positions_x[0],
-                    marker=marker_custom.rr100_marker, s=8000,
+                    marker=marker_custom.rr100_marker, s=1600,
                     facecolor="none", edgecolor="g")
         plt.scatter(goal[0], goal[1], marker="x", c="r")
 
@@ -409,6 +234,204 @@ class Plotter():
         fig.colorbar(lc, ax=ax, label=cbar_label.get(type, type))
         plt.title("Trajectory for episode " + str(idx))
         plt.show()
+
+    def create_episode_gif(
+        self,
+        data,
+        output_path,
+        n_seconds=2,
+        val_min=0.0,
+        val_max=10.0,
+        obstacle_val_min=0.0,
+        obstacle_val_max=10.0,
+    ):
+        """
+        Saves an animated GIF with one frame per episode.
+
+        Each frame is a 3-panel figure:
+          left   — reward evolution over steps
+          center — robot trajectory coloured by total reward
+          right  — robot trajectory coloured by obstacle penalty
+
+        Args:
+            data:               list of (actions, rewards, observations, success) per episode,
+                                as returned by LogReader.study_all / study_episode.
+            output_path:        destination path for the .gif file.
+            n_seconds:          how long each episode frame is displayed (seconds).
+            val_min/val_max:    colormap range for the reward trajectory.
+            obstacle_val_min/obstacle_val_max:
+                                colormap range for the obstacle-penalty trajectory.
+        """
+        frames = []
+
+        for ep_idx, (actions, rewards, observations, success) in enumerate(data, start=1):
+            fig = self._render_episode_figure(
+                ep_idx, rewards, observations, success,
+                val_min, val_max, obstacle_val_min, obstacle_val_max,
+            )
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            plt.close(fig)
+            buf.seek(0)
+            frames.append(Image.open(buf).copy())
+            buf.close()
+
+        if not frames:
+            return
+
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=int(n_seconds * 1000),
+            loop=0,
+        )
+
+    def generate_collection(
+        self,
+        data,
+        log_filename,
+        val_min=0.0,
+        val_max=10.0,
+        obstacle_val_min=0.0,
+        obstacle_val_max=10.0,
+    ):
+        """
+        Saves one PNG per episode into a structured folder tree.
+
+        Layout:
+            <log_filename_stem>/
+                succeeded/episode_<n>.png
+                failed/episode_<n>.png
+
+        Args:
+            data:          list of (actions, rewards, observations, success) per episode.
+            log_filename:  original log filename (e.g. "log_hs_re_2.txt"); used as the
+                           root folder name (extension stripped).
+            val_min/val_max:               colormap range for the reward trajectory.
+            obstacle_val_min/obstacle_val_max: colormap range for the obstacle trajectory.
+        """
+        root = Path(Path(log_filename).stem)
+        succeeded_dir = root / "succeeded"
+        failed_dir    = root / "failed"
+        succeeded_dir.mkdir(parents=True, exist_ok=True)
+        failed_dir.mkdir(parents=True, exist_ok=True)
+
+        for ep_idx, (actions, rewards, observations, success) in enumerate(data, start=1):
+            fig = self._render_episode_figure(
+                ep_idx, rewards, observations, success,
+                val_min, val_max, obstacle_val_min, obstacle_val_max,
+            )
+            dest = succeeded_dir if success else failed_dir
+            fig.savefig(dest / f"episode_{ep_idx}.png", dpi=100, bbox_inches="tight")
+            plt.close(fig)
+
+    def _render_episode_figure(
+        self,
+        ep_idx,
+        rewards,
+        observations,
+        success,
+        val_min,
+        val_max,
+        obstacle_val_min,
+        obstacle_val_max,
+    ):
+        """Build and return the 3-panel figure for one episode (caller must close it)."""
+        marker_custom = CustomMarkers()
+        is_dict = isinstance(rewards[0], dict)
+
+        values_reward = (
+            [r["reward"][0]           for r in rewards] if is_dict else [r[0] for r in rewards]
+        )
+        values_obstacle = (
+            [r["obstacle_penalty"][0] for r in rewards] if is_dict else [r[0] for r in rewards]
+        )
+
+        positions = [step["robot_position"] for step in observations]
+        pos_x, pos_y = zip(*positions)
+        pos_y        = [-y for y in pos_y]
+        goal         = [-observations[0]["goal"][1],     observations[0]["goal"][0]]
+        obstacle_pos = [-observations[0]["obstacle"][1], observations[0]["obstacle"][0]]
+
+        final_pos  = positions[-1]
+        final_plot = (-final_pos[1], final_pos[0])
+
+        last_obs = observations[-1]
+        rx, ry   = last_obs["robot_position"]
+        ox, oy   = last_obs["obstacle"]
+        final_dist_obstacle = np.sqrt((rx - ox) ** 2 + (ry - oy) ** 2)
+
+        steps         = np.arange(1, len(rewards) + 1)
+        outcome       = "SUCCESS" if success else "FAILURE"
+        outcome_color = "#2ca02c" if success else "#d62728"
+
+        fig, axes = plt.subplots(1, 3, figsize=(21, 7))
+        fig.suptitle(
+            f"Episode {ep_idx}  —  {outcome}  |  Final dist to obstacle: {final_dist_obstacle:.2f} m",
+            fontsize=14, fontweight="bold", color=outcome_color,
+        )
+
+        # Left: reward evolution
+        ax0 = axes[0]
+        if is_dict:
+            obs_penalties = [r["obstacle_penalty"][0] for r in rewards]
+            whole_rewards = [r["reward"][0]           for r in rewards]
+            ax0.plot(steps, obs_penalties, color="#ff7f0e", label="obstacle penalty")
+            ax0.fill_between(steps, obs_penalties, alpha=0.2, color="#ff7f0e")
+            ax0.plot(steps, whole_rewards, color="#1f77b4", label="reward")
+            ax0.fill_between(steps, whole_rewards, alpha=0.5, color="#1f77b4")
+            ax0.legend()
+        else:
+            ax0.plot(steps, values_reward, color="#1f77b4")
+        ax0.set_ylabel("Reward")
+        ax0.set_xlabel("Step")
+        ax0.set_title("Reward evolution")
+
+        # Centre: trajectory coloured by total reward
+        ax1 = axes[1]
+        ax1.set_aspect("equal")
+        ax1.set_xlim(-4, 4)
+        ax1.set_ylim(-4, 4)
+        ax1.add_patch(Circle(obstacle_pos, radius=0.2))
+        ax1.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5))
+        lc1 = plot_colored_line(
+            ax1, pos_y, pos_x, values_reward,
+            cmap="jet", linewidth=3, val_min=val_min, val_max=val_max,
+        )
+        ax1.scatter(pos_y[0], pos_x[0],
+                    marker=marker_custom.rr100_marker, s=1600,
+                    facecolor="none", edgecolor="g", zorder=5)
+        ax1.scatter(goal[0], goal[1], marker="x", c="r", zorder=5)
+        ax1.scatter(*final_plot, marker="P" if success else "X",
+                    s=100, c=outcome_color, zorder=6, label=outcome)
+        ax1.legend(loc="upper left", fontsize=8)
+        fig.colorbar(lc1, ax=ax1, label="reward")
+        ax1.set_title("Global trajectory (reward)")
+
+        # Right: trajectory coloured by obstacle penalty
+        ax2 = axes[2]
+        ax2.set_aspect("equal")
+        ax2.set_xlim(-4, 4)
+        ax2.set_ylim(-4, 4)
+        ax2.add_patch(Circle(obstacle_pos, radius=0.2))
+        ax2.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5))
+        lc2 = plot_colored_line(
+            ax2, pos_y, pos_x, values_obstacle,
+            cmap="jet", linewidth=3, val_min=obstacle_val_min, val_max=obstacle_val_max,
+        )
+        ax2.scatter(pos_y[0], pos_x[0],
+                    marker=marker_custom.rr100_marker, s=1600,
+                    facecolor="none", edgecolor="g", zorder=5)
+        ax2.scatter(goal[0], goal[1], marker="x", c="r", zorder=5)
+        ax2.scatter(*final_plot, marker="P" if success else "X",
+                    s=100, c=outcome_color, zorder=6, label=outcome)
+        ax2.legend(loc="upper left", fontsize=8)
+        fig.colorbar(lc2, ax=ax2, label="obstacle penalty")
+        ax2.set_title("Obstacle trajectory")
+
+        plt.tight_layout()
+        return fig
 
     def plot_trajectory_interactive(
         self,
@@ -427,26 +450,26 @@ class Plotter():
         values_obstacle = (
             [r["obstacle_penalty"][0] for r in rewards] if is_dict else [r[0] for r in rewards]
         )
-    
+
         marker_custom = CustomMarkers()
         positions     = [step["robot_position"] for step in observations]
         pos_x, pos_y  = zip(*positions[:-1])
         pos_y         = [-y for y in pos_y]
         goal          = [-observations[0]["goal"][1],     observations[0]["goal"][0]]
         obstacle      = [-observations[0]["obstacle"][1], observations[0]["obstacle"][0]]
-    
+
         fig = plt.figure(figsize=(7, 7))
         ax  = fig.add_axes([0.08, 0.15, 0.80, 0.78])
         ax.axis("equal")
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
-    
+
         ax_radio = fig.add_axes([0.25, 0.02, 0.50, 0.09])
         radio    = mwidgets.RadioButtons(
             ax_radio, labels=("reward", "obstacle"), active=0, activecolor="#1f77b4"
         )
         for label in radio.labels:
             label.set_fontsize(10)
-    
+
         ax.add_patch(Circle(obstacle, radius=0.2, label="Obstacle"))
         ax.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none",
                             alpha=0.5, label="Goal"))
@@ -455,7 +478,7 @@ class Plotter():
                    facecolor="none", edgecolor="g", zorder=5, label="Robot start")
         ax.scatter(goal[0], goal[1], marker="x", c="r", zorder=5)
         ax.legend(loc="upper left", fontsize=8)
-    
+
         lc = plot_colored_line(
             ax, pos_y, pos_x, values_reward,
             cmap="jet", linewidth=3,
@@ -464,16 +487,17 @@ class Plotter():
         # Use a list so the closure always reads the *current* colorbar
         cbar_holder = [fig.colorbar(lc, ax=ax, label="reward")]
         ax.set_title(f"Trajectory for episode {idx}  —  reward")
-    
+
         def _on_toggle(label):
-            # Remove only LineCollections, leave scatter PathCollections alone
             for coll in list(ax.collections):
                 if isinstance(coll, LineCollection):
                     coll.remove()
-    
-            # Remove current colorbar via the mutable holder
+
+            # Fully remove the colorbar and its axes from the figure
             cbar_holder[0].remove()
-    
+            cbar_holder[0].ax.remove()      # <-- this is the missing line
+            fig.subplots_adjust()           # reset layout so the main ax expands back
+
             if label == "reward":
                 new_lc = plot_colored_line(
                     ax, pos_y, pos_x, values_reward,
@@ -490,12 +514,8 @@ class Plotter():
                 )
                 cbar_holder[0] = fig.colorbar(new_lc, ax=ax, label="obstacle penalty")
                 ax.set_title(f"Trajectory for episode {idx}  —  obstacle penalty")
-    
+
             fig.canvas.draw_idle()
-    
-        radio.on_clicked(_on_toggle)
-        fig._radio = radio
-        plt.show()
 
 
 def generate_gazebo_episode_data(observations, filename):
@@ -526,7 +546,7 @@ def plot_colored_line(ax, x, y, values, cmap="plasma", linewidth=2,
 
 if __name__ == "__main__":
 
-    datalog = LogReader("log_hs_re_2.txt", type="maneuvernet")
+    datalog = LogReader("log_bordel.txt", type="maneuvernet")
     datalog.study_all()
 
     obstacle_val_min, obstacle_val_max = datalog.get_max_rewards(reward_type="obstacle_penalty")
@@ -534,8 +554,27 @@ if __name__ == "__main__":
 
     plotme = Plotter()
 
-    for idx in range(13, 17):
-        actions, rewards, observations = datalog.study_episode(idx)
+    plotme.create_episode_gif(
+        datalog.data,
+        output_path="episodes_wrong.gif",
+        n_seconds=2,
+        val_min=val_min,
+        val_max=val_max,
+        obstacle_val_min=obstacle_val_min,
+        obstacle_val_max=obstacle_val_max,
+    )
+
+    plotme.generate_collection(
+        datalog.data,
+        log_filename=datalog.filename,
+        val_min=val_min,
+        val_max=val_max,
+        obstacle_val_min=obstacle_val_min,
+        obstacle_val_max=obstacle_val_max,
+    )
+
+    """for idx in range(13, 17):
+        actions, rewards, observations, success = datalog.study_episode(idx)
 
         plotme.plot_rewards(rewards, idx)
 
@@ -544,4 +583,4 @@ if __name__ == "__main__":
             observations, rewards, idx,
             val_min_reward=val_min,       val_max_reward=val_max,
             val_min_obstacle=obstacle_val_min, val_max_obstacle=obstacle_val_max,
-        )
+        )"""
