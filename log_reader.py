@@ -1,3 +1,4 @@
+import argparse
 import io
 import os
 import numpy as np
@@ -129,10 +130,10 @@ class LogReader():
         rx, ry = last["robot_position"]
         gx, gy = last["goal"]
 
-        print("Ep jump")
-        print(rx, ry)
-        print(gx, gy)
-        print(np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2))
+        #print("Ep jump")
+        #print(rx, ry)
+        #print(gx, gy)
+        #print(np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2))
         success = np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2) < SUCCESS_RADIUS
 
         return actions, rewards, observations, success
@@ -295,12 +296,13 @@ class Plotter():
         val_max=10.0,
         obstacle_val_min=0.0,
         obstacle_val_max=10.0,
+        output_dir=None,
     ):
         """
         Saves one PNG per episode into a structured folder tree.
 
         Layout:
-            <log_filename_stem>/
+            [output_dir/]<log_filename_stem>/
                 succeeded/episode_<n>.png
                 failed/episode_<n>.png
 
@@ -310,8 +312,10 @@ class Plotter():
                            root folder name (extension stripped).
             val_min/val_max:               colormap range for the reward trajectory.
             obstacle_val_min/obstacle_val_max: colormap range for the obstacle trajectory.
+            output_dir:    optional parent directory; defaults to the current directory.
         """
-        root = Path(Path(log_filename).stem)
+        base = Path(output_dir) if output_dir else Path(".")
+        root = base / Path(log_filename).stem
         succeeded_dir = root / "succeeded"
         failed_dir    = root / "failed"
         succeeded_dir.mkdir(parents=True, exist_ok=True)
@@ -359,8 +363,8 @@ class Plotter():
 
         last_obs = observations[-1]
         rx, ry   = last_obs["robot_position"]
-        ox, oy   = last_obs["obstacle"]
-        final_dist_obstacle = np.sqrt((rx - ox) ** 2 + (ry - oy) ** 2)
+        gx, gy   = last_obs["goal"]
+        final_dist_goal = np.sqrt((rx - gx) ** 2 + (ry - gy) ** 2)
 
         steps         = np.arange(1, len(rewards) + 1)
         outcome       = "SUCCESS" if success else "FAILURE"
@@ -368,7 +372,7 @@ class Plotter():
 
         fig, axes = plt.subplots(1, 3, figsize=(21, 7))
         fig.suptitle(
-            f"Episode {ep_idx}  —  {outcome}  |  Final dist to obstacle: {final_dist_obstacle:.2f} m",
+            f"Episode {ep_idx}  —  {outcome}  |  Final distance to goal: {final_dist_goal:.2f} m",
             fontsize=14, fontweight="bold", color=outcome_color,
         )
 
@@ -428,7 +432,7 @@ class Plotter():
                     s=100, c=outcome_color, zorder=6, label=outcome)
         ax2.legend(loc="upper left", fontsize=8)
         fig.colorbar(lc2, ax=ax2, label="obstacle penalty")
-        ax2.set_title("Obstacle trajectory")
+        ax2.set_title("Global trajectory (obstacle only)")
 
         plt.tight_layout()
         return fig
@@ -518,11 +522,17 @@ class Plotter():
             fig.canvas.draw_idle()
 
 
-def generate_gazebo_episode_data(observations, filename):
+def generate_gazebo_episode_data(data, filename):
+    """Write one line per episode containing its goal and obstacle positions.
+
+    Each line has the format:  goal -/- obstacle
+    where goal and obstacle are the values from the first observation of each episode
+    (they are fixed for the duration of an episode).
+    """
     with open(filename, "w") as file:
-        for observation in observations[:-1]:
-            goal     = observation["goal"]
-            obstacle = observation["obstacle"]
+        for actions, rewards, observations, success in data:
+            goal     = observations[0]["goal"]
+            obstacle = observations[0]["obstacle"]
             file.write(str(goal) + "-/-" + str(obstacle) + "\n")
 
 
@@ -546,7 +556,13 @@ def plot_colored_line(ax, x, y, values, cmap="plasma", linewidth=2,
 
 if __name__ == "__main__":
 
-    datalog = LogReader("log_bordel.txt", type="maneuvernet")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--logfile", required=True, help="Log filename inside the logs/ folder")
+    parser.add_argument("--type", choices=["workshop", "maneuvernet"], default="maneuvernet",
+                        help="Observation format used during logging")
+    args = parser.parse_args()
+
+    datalog = LogReader(args.logfile, type=args.type)
     datalog.study_all()
 
     obstacle_val_min, obstacle_val_max = datalog.get_max_rewards(reward_type="obstacle_penalty")
@@ -554,9 +570,13 @@ if __name__ == "__main__":
 
     plotme = Plotter()
 
+    logname = Path(datalog.filename).stem
+    output_dir = Path("test_" + logname)
+    output_dir.mkdir(exist_ok=True)
+
     plotme.create_episode_gif(
         datalog.data,
-        output_path="episodes_wrong.gif",
+        output_path=output_dir / "episodes.gif",
         n_seconds=2,
         val_min=val_min,
         val_max=val_max,
@@ -571,6 +591,12 @@ if __name__ == "__main__":
         val_max=val_max,
         obstacle_val_min=obstacle_val_min,
         obstacle_val_max=obstacle_val_max,
+        output_dir=output_dir,
+    )
+
+    generate_gazebo_episode_data(
+        datalog.data,
+        output_dir / (logname + "_gazebo_sim.txt"),
     )
 
     """for idx in range(13, 17):

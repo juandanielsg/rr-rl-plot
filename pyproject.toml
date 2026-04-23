@@ -8,5 +8,6 @@ dependencies = [
     "svgpath2mpl",
     "matplotlib",
     "numpy",
+    "pillow",
     "svgpathtools",
 ]
