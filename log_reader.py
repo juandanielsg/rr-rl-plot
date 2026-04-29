@@ -5,7 +5,7 @@ import numpy as np
 import json
 import matplotlib.pyplot as plt
 import matplotlib.widgets as mwidgets
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Rectangle
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from my_custom_markers import CustomMarkers
@@ -218,6 +218,7 @@ class Plotter():
         fig, ax = plt.subplots()
         ax.axis("equal")
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
+        draw_chessboard(ax)
 
         ax.add_patch(Circle(obstacle, radius=0.2))
         ax.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5))
@@ -240,7 +241,7 @@ class Plotter():
         self,
         data,
         output_path,
-        n_seconds=2,
+        n_seconds=3,
         val_min=0.0,
         val_max=10.0,
         obstacle_val_min=0.0,
@@ -397,6 +398,7 @@ class Plotter():
         ax1.set_aspect("equal")
         ax1.set_xlim(-4, 4)
         ax1.set_ylim(-4, 4)
+        draw_chessboard(ax1)
         ax1.add_patch(Circle(obstacle_pos, radius=0.2))
         ax1.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5))
         lc1 = plot_colored_line(
@@ -418,6 +420,7 @@ class Plotter():
         ax2.set_aspect("equal")
         ax2.set_xlim(-4, 4)
         ax2.set_ylim(-4, 4)
+        draw_chessboard(ax2)
         ax2.add_patch(Circle(obstacle_pos, radius=0.2))
         ax2.add_patch(Circle(goal, radius=0.1, edgecolor="r", facecolor="none", alpha=0.5))
         lc2 = plot_colored_line(
@@ -466,6 +469,7 @@ class Plotter():
         ax  = fig.add_axes([0.08, 0.15, 0.80, 0.78])
         ax.axis("equal")
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
+        draw_chessboard(ax)
 
         ax_radio = fig.add_axes([0.25, 0.02, 0.50, 0.09])
         radio    = mwidgets.RadioButtons(
@@ -534,6 +538,15 @@ def generate_gazebo_episode_data(data, filename):
             goal     = observations[0]["goal"]
             obstacle = observations[0]["obstacle"]
             file.write(str(goal) + "-/-" + str(obstacle) + "\n")
+
+
+def draw_chessboard(ax, x_min=-4, x_max=4, y_min=-4, y_max=4):
+    import math
+    colors = ["white", "#E8E8E8"]
+    for i in range(math.floor(x_min), math.ceil(x_max)):
+        for j in range(math.floor(y_min), math.ceil(y_max)):
+            color = colors[(i + j) % 2]
+            ax.add_patch(Rectangle((i, j), 1, 1, facecolor=color, edgecolor="none", zorder=0))
 
 
 def plot_colored_line(ax, x, y, values, cmap="plasma", linewidth=2,

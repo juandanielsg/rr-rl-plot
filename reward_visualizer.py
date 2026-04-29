@@ -198,7 +198,7 @@ def plot_reward_heatmap(
  
 if __name__ == "__main__":
     fig = plot_reward_heatmap(
-        goal=(-1.6, 0.5),
+        goal=(-1.6, 0.0),
         obstacle=(-0.8, 0.0),
         c1=1.0,
         c2=5.0,

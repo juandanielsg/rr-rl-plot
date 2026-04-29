@@ -425,6 +425,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "pillow" },
     { name = "svgpath2mpl" },
     { name = "svgpathtools" },
 ]
@@ -433,6 +434,7 @@ dependencies = [
 requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "pillow" },
     { name = "svgpath2mpl" },
     { name = "svgpathtools" },
 ]
