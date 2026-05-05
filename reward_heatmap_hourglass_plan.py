@@ -8,7 +8,13 @@ from my_custom_markers import CustomMarkers
 
 ROBOT_WIDTH = 0.65
 ROBOT_LENGTH = 0.90
+WHEELBASE = 0.55          # RR100: front axle x=0.30, rear axle x=-0.25
 OBSTACLE_RADIUS = 0.20
+LAT_ACCEL_LIMIT   = 0.02       # max lateral acceleration (m/s²) for velocity-dependent steering
+STEER_ACCEL_LIMIT = np.pi / 6  # max steering acceleration (rad/s²)
+LIN_ACCEL_LIMIT   = 1.0        # max linear acceleration (m/s²)
+MAX_LIN_VEL       = 1.0        # max linear speed (m/s)
+RATE              = 40         # planning steps per second
 
 
 def get_reward_hourglass(
@@ -16,21 +22,31 @@ def get_reward_hourglass(
     y: np.ndarray,
     goal: np.ndarray,
     error_bias: np.ndarray,
-    gradient: float = 1,
+    gradient: float = 1.5,
     theta: float = 0.0,
 ) -> np.ndarray:
+    
+
     if theta != 0.0:
         c, s = np.cos(theta), np.sin(theta)
         x, y   =  c * x + s * y, -s * x + c * y
         gx, gy = goal
         goal   = (c * gx + s * gy, -s * gx + c * gy)
+
     gx, gy = goal
     dx = gx - x
     dy = gy - y
     delta     = np.minimum(np.abs(dx) - np.abs(dy), 0.0)
-    dy_warped = dy - np.sign(dy) * delta * 1/gradient
+
+    gradient = np.where(delta==0, gradient, 1)
+
+
+    dy_warped = (dy - np.sign(dy) * delta)/gradient
+    dx = dx/gradient
+
+
     diff      = np.array([dx, dy_warped]) * np.asarray(error_bias).reshape(2, *([1] * np.ndim(y)))
-    return -(np.linalg.norm(diff, axis=0) * gradient)
+    return -(np.linalg.norm(diff, axis=0))
 
 
 def reward_obstacle_reverse_ellipse(
@@ -115,6 +131,56 @@ def reward_obstacle_triangle(
     return rew
 
 
+def reward_obstacle_triangle_mod(
+    x: np.ndarray,
+    y: np.ndarray,
+    obstacle: Tuple[float, float],
+    goal: Tuple[float, float],
+    radius: float = ROBOT_WIDTH + OBSTACLE_RADIUS,
+    height: float = ROBOT_LENGTH + OBSTACLE_RADIUS,
+    penalty: float = None,
+    lateral_scale: float = 1.0,
+) -> np.ndarray:
+    ox, oy = obstacle
+    gx, gy = goal
+    eps = 1e-9
+
+    # Unit vector from obstacle away from goal
+    dg_x, dg_y = gx - ox, gy - oy
+    D_og = np.sqrt(dg_x**2 + dg_y**2) + eps
+    ux, uy = -dg_x / D_og, -dg_y / D_og  # obstacle → away from goal
+    px, py = -uy, ux                       # perpendicular
+
+    # Displacement from obstacle to each grid point
+    vx, vy = x - ox, y - oy
+
+    s_along = vx * ux + vy * uy     # + = away from goal
+    s_perp  = vx * px + vy * py     # lateral distance
+
+    d_obs = np.sqrt(vx**2 + vy**2)
+
+    # Semi-circle on the goal-facing side of the obstacle
+    in_circle = (d_obs < radius) & (s_along <= 0)
+
+    # Triangle: base at obstacle (full width = 2*radius), apex at s_along=height (zero width).
+    width = 2.0 * radius
+    half_w = (width / 2.0) * np.clip(1.0 - s_along / (height + eps), 0.0, 1.0)
+    in_triangle = (s_along >= 0) & (s_along <= height) & (np.abs(s_perp) <= half_w)
+
+    if penalty is not None:
+        return np.where(in_circle | in_triangle, penalty, 0.0)
+
+    # Lateral slope: reward increases toward the edges of the zone (outward from spine),
+    # creating a gradient that pushes the robot around the obstacle rather than through it.
+    lateral      = lateral_scale * np.abs(s_perp) / (radius + eps)
+    circle_rew   = np.clip(d_obs / radius - 1.0, -1.0, 0.0)
+    triangle_rew = np.minimum(-(1.0 - np.clip(s_along / height, 0.0, 1.0)) + lateral, 0.0)
+
+    rew = np.where(in_triangle, triangle_rew, 0.0)
+    rew = np.where(in_circle, np.minimum(circle_rew, rew), rew)
+    return rew
+
+
 def reward_obstacle_circulation(
     x: np.ndarray,
     y: np.ndarray,
@@ -161,7 +227,7 @@ def plot_reward_heatmap_hourglass(
     figsize: Tuple[float, float] = (10, 8),
     error_shape: list = None,
     error_bias: list = None,
-    linear_step: float = 0.2,
+    linear_step: float = 0.02,
     angular_step: float = 0.1,
 ) -> plt.Figure:
     """
@@ -190,10 +256,11 @@ def plot_reward_heatmap_hourglass(
     # Five rows (top → bottom), slider height 0.018, pitch 0.040
     R1, R2, R3, R4, R5, SH = 0.350, 0.310, 0.270, 0.230, 0.190, 0.018
 
-    # Col 1 — Reward weights (3 sliders)
-    ax_c1 = fig.add_axes([C1, R1, CW, SH])
-    ax_c2 = fig.add_axes([C1, R2, CW, SH])
-    ax_c3 = fig.add_axes([C1, R3, CW, SH])
+    # Col 1 — Reward weights (3 sliders) + gradient
+    ax_c1   = fig.add_axes([C1, R1, CW, SH])
+    ax_c2   = fig.add_axes([C1, R2, CW, SH])
+    ax_c3   = fig.add_axes([C1, R3, CW, SH])
+    ax_grad = fig.add_axes([C1, R4, CW, SH])
 
     # Col 2 — Ellipse shape + bias + exponents (5 sliders)
     ax_sx     = fig.add_axes([C2, R1, CW, SH])
@@ -202,35 +269,48 @@ def plot_reward_heatmap_hourglass(
     ax_eby    = fig.add_axes([C2, R4, CW, SH])
     ax_exp    = fig.add_axes([C2, R5, CW, SH])
 
-    # Col 3 — Distance threshold + triangle height + clipping (3 sliders)
-    ax_radius = fig.add_axes([C3, R1, CW, SH])
-    ax_height = fig.add_axes([C3, R2, CW, SH])
-    ax_clip   = fig.add_axes([C3, R3, CW, SH])
+    # Col 3 — Distance threshold + triangle height + lateral scale + clipping (4 sliders)
+    ax_radius  = fig.add_axes([C3, R1, CW, SH])
+    ax_height  = fig.add_axes([C3, R2, CW, SH])
+    ax_lateral = fig.add_axes([C3, R3, CW, SH])
+    ax_clip    = fig.add_axes([C3, R4, CW, SH])
 
     # Toggles — bottom strip
     ax_toggle       = fig.add_axes([C1, 0.105, 0.22, 0.038])
     ax_toggle_shape = fig.add_axes([C2, 0.105, 0.22, 0.038])
+    ax_toggle_grad  = fig.add_axes([C3, 0.105, 0.22, 0.038])
+
+    # Path buttons
+    ax_path_btn  = fig.add_axes([0.04, 0.060, 0.24, 0.032])
+    ax_beam_btn  = fig.add_axes([0.30, 0.060, 0.24, 0.032])
+    ax_clear_btn = fig.add_axes([0.56, 0.060, 0.16, 0.032])
 
     sl_c1     = mwidgets.Slider(ax_c1,     'c1',          0.0, 5.0, valinit=c1,             valstep=0.05)
     sl_c2     = mwidgets.Slider(ax_c2,     'c2',          0.0, 5.0, valinit=0.0,            valstep=0.05)
     sl_c3     = mwidgets.Slider(ax_c3,     'c3',          0.0, 5.0, valinit=c3,             valstep=0.05)
+    sl_grad   = mwidgets.Slider(ax_grad,   'gradient',    0.1, 3.0, valinit=1.5,            valstep=0.05)
     sl_radius = mwidgets.Slider(ax_radius, 'radius',  0.1, 3.0, valinit=obs_radius,     valstep=0.05)
     sl_sx     = mwidgets.Slider(ax_sx,     'shape x',     0.2, 4.0, valinit=error_shape[0], valstep=0.1)
     sl_sy     = mwidgets.Slider(ax_sy,     'shape y',     0.2, 4.0, valinit=error_shape[1], valstep=0.1)
     sl_exp    = mwidgets.Slider(ax_exp,    'exponents',   0.2, 4.0, valinit=0.8,            valstep=0.05)
     sl_ebx    = mwidgets.Slider(ax_ebx,    'bias x',      0.2, 4.0, valinit=error_bias[0],  valstep=0.1)
     sl_eby    = mwidgets.Slider(ax_eby,    'bias y',      0.2, 4.0, valinit=error_bias[1],  valstep=0.1)
-    sl_height = mwidgets.Slider(ax_height, 'tri height',  0.1, 8.0, valinit=tri_height,     valstep=0.1)
-    sl_clip   = mwidgets.Slider(ax_clip,   'clip',       -5.0, 5.0, valinit=clip_high,      valstep=0.1)
+    sl_height  = mwidgets.Slider(ax_height,  'tri height',  0.1, 8.0, valinit=tri_height, valstep=0.1)
+    sl_lateral = mwidgets.Slider(ax_lateral, 'lat scale',   0.0, 3.0, valinit=1.0,        valstep=0.05)
+    sl_clip    = mwidgets.Slider(ax_clip,    'clip',       -5.0, 5.0, valinit=clip_high,  valstep=0.1)
     chk_bias     = mwidgets.CheckButtons(ax_toggle,       ['Show bias ellipse'],  [False])
     chk_shape    = mwidgets.CheckButtons(ax_toggle_shape, ['Show shape ellipse'], [False])
+    chk_grad     = mwidgets.CheckButtons(ax_toggle_grad,  ['Show gradient'],      [True])
+    btn_path  = mwidgets.Button(ax_path_btn,  'Gradient path')
+    btn_beam  = mwidgets.Button(ax_beam_btn,  'Beam search path')
+    btn_clear = mwidgets.Button(ax_clear_btn, 'Clear paths')
 
     # Group labels
     fig.text(C1, 0.385, 'Reward weights',           fontsize=8, color='grey', fontweight='bold')
     fig.text(C2, 0.385, 'Ellipse shape / bias',     fontsize=8, color='grey', fontweight='bold')
     fig.text(C3, 0.385, 'Distance / height / clip', fontsize=8, color='grey', fontweight='bold')
     fig.text(C1, 0.03,
-             'W/X: drive forward/back  |  A/D: steer left/right  |  '
+             'W/X: drive along arc  |  A/D: adjust steering  |  S: straighten  |  M: reset  |  '
              'Left-click: reposition obstacle',
              fontsize=8, color='grey', style='italic')
 
@@ -238,7 +318,7 @@ def plot_reward_heatmap_hourglass(
     state = {
         'goal':         list(goal),
         'obstacle':     list(obstacle),
-        'theta':        0.0,
+        'steering':     0.0,
         'chess_px':     0.0,
         'chess_py':     0.0,
         'chess_phi':    0.0,
@@ -265,15 +345,15 @@ def plot_reward_heatmap_hourglass(
         _height = sl_height.val
         _clip   = sl_clip.val
 
-        rg = get_reward_hourglass(X, Y, tuple(state['goal']), error_bias=GOAL_BIAS)
+        rg = get_reward_hourglass(X, Y, tuple(state['goal']), error_bias=GOAL_BIAS, gradient=sl_grad.val)
         _exp = sl_exp.val
         ro = reward_obstacle_reverse_ellipse(X, Y, tuple(state['obstacle']),
                                              error_shape=[_sx, _sy],
                                              error_bias=[_ebx, _eby],
                                              radius=_radius,
                                              exponents=[_exp, _exp])
-        rc = reward_obstacle_triangle(X, Y, tuple(state['obstacle']), tuple(state['goal']),
-                                      radius=_radius, height=_height)
+        rc = reward_obstacle_triangle_mod(X, Y, tuple(state['obstacle']), tuple(state['goal']),
+                                      radius=_radius, height=_height, lateral_scale=sl_lateral.val)
         R_raw = _c1 * rg + _c2 * ro + _c3 * rc
         _lo = obs_penalty
         _hi = _clip if _clip > _lo else _lo + 1e-3
@@ -316,6 +396,136 @@ def plot_reward_heatmap_hourglass(
 
         state['obs_marker'].set_center((_obs[1], _obs[0]))
 
+    # ------------------------------------------------ gradient path helpers
+    def _reward_at(px, py):
+        _c1  = sl_c1.val;  _c2  = sl_c2.val;  _c3  = sl_c3.val
+        _sx  = sl_sx.val;  _sy  = sl_sy.val;   _exp = sl_exp.val
+        _ebx = sl_ebx.val; _eby = sl_eby.val
+        _r   = sl_radius.val; _h = sl_height.val
+        rg = get_reward_hourglass(px, py, tuple(state['goal']), error_bias=GOAL_BIAS)
+        ro = reward_obstacle_reverse_ellipse(
+            px, py, tuple(state['obstacle']),
+            error_shape=[_sx, _sy], error_bias=[_ebx, _eby],
+            radius=_r, exponents=[_exp, _exp])
+        rc = reward_obstacle_triangle(
+            px, py, tuple(state['obstacle']), tuple(state['goal']),
+            radius=_r, height=_h)
+        return float(_c1 * rg + _c2 * ro + _c3 * rc)
+
+    def _run_gradient_path():
+        STEP      = 0.01
+        FD        = 0.02
+        MAX       = 500
+        THRESH    = ROBOT_WIDTH / 2
+        MAX_STEER = 0.57  # RR100 joint limits ±0.57 rad
+
+        px, py  = 0.0, 0.0
+        heading = 0.0
+        goal    = state['goal']
+        xs, ys  = [px], [py]
+
+        for _ in range(MAX):
+            if np.sqrt((px - goal[0])**2 + (py - goal[1])**2) < THRESH:
+                break
+
+            gx = (_reward_at(px + FD, py) - _reward_at(px - FD, py)) / (2 * FD)
+            gy = (_reward_at(px, py + FD) - _reward_at(px, py - FD)) / (2 * FD)
+            if np.sqrt(gx**2 + gy**2) < 1e-9:
+                break
+
+            phi     = np.arctan2(gy, gx)
+            dhead_f = (phi - heading + np.pi) % (2 * np.pi) - np.pi  # [-π, π]
+
+            if abs(dhead_f) <= np.pi / 2:
+                ds    = STEP
+                delta = np.clip(np.arctan2(dhead_f * WHEELBASE, 2 * STEP),
+                                -MAX_STEER, MAX_STEER)
+            else:
+                ds      = -STEP
+                dhead_b = dhead_f - (np.pi if dhead_f >= 0 else -np.pi)
+                delta   = np.clip(np.arctan2(-dhead_b * WHEELBASE, 2 * STEP),
+                                  -MAX_STEER, MAX_STEER)
+
+            if abs(delta) < 1e-6:
+                px += ds * np.cos(heading)
+                py += ds * np.sin(heading)
+            else:
+                R_turn  = WHEELBASE / (2 * np.tan(delta))
+                dtheta  = ds / R_turn
+                dx_h    = R_turn * np.sin(dtheta)
+                dy_h    = R_turn * (1 - np.cos(dtheta))
+                ch, sh  = np.cos(heading), np.sin(heading)
+                px     += ch * dx_h - sh * dy_h
+                py     += sh * dx_h + ch * dy_h
+                heading += dtheta
+
+            xs.append(px)
+            ys.append(py)
+
+        return np.array(xs), np.array(ys)
+
+    def _run_beam_search_path():
+        NUM_BEAMS = 10
+        MAX_STEPS = 400
+        N_STEERS  = 9
+        N_SPEEDS  = 5
+        THRESH    = ROBOT_WIDTH / 2
+
+        goal = state['goal']
+
+        def _kin(px, py, h, delta, ds):
+            if abs(delta) < 1e-6:
+                return px + ds * np.cos(h), py + ds * np.sin(h), h
+            R_t = WHEELBASE / (2 * np.tan(delta))
+            dt  = ds / R_t
+            ch, sh = np.cos(h), np.sin(h)
+            dx = R_t * np.sin(dt)
+            dy = R_t * (1 - np.cos(dt))
+            return px + ch*dx - sh*dy, py + sh*dx + ch*dy, h + dt
+
+        # Each beam: [cum_reward, px, py, heading, steer, vel, done, path_xs, path_ys]
+        beams = [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, [0.0], [0.0]]]
+
+        for _ in range(MAX_STEPS):
+            if all(b[6] for b in beams):
+                break
+
+            cands = []
+            for bi, beam in enumerate(beams):
+                cum_r, px, py, h, steer, vel, done = (
+                    beam[0], beam[1], beam[2], beam[3], beam[4], beam[5], beam[6])
+                if done:
+                    cands.append((cum_r, px, py, h, steer, vel, True, bi))
+                    continue
+
+                v_lo = max(-1.0, vel - LIN_ACCEL_LIMIT / RATE)
+                v_hi = min( 1.0, vel + LIN_ACCEL_LIMIT / RATE)
+                for ds in np.linspace(v_lo, v_hi, N_SPEEDS):
+                    v_lim = _steer_limit(abs(ds))
+                    s_lo  = max(-v_lim, steer - STEER_ACCEL_LIMIT / RATE)
+                    s_hi  = min( v_lim, steer + STEER_ACCEL_LIMIT / RATE)
+                    for delta in np.linspace(s_lo, s_hi, N_STEERS):
+                        nx, ny, nh = _kin(px, py, h, delta, ds)
+                        r = _reward_at(nx, ny)
+                        is_done = np.hypot(nx - goal[0], ny - goal[1]) < THRESH
+                        cands.append((cum_r + r, nx, ny, nh, delta, ds, is_done, bi))
+
+            cands.sort(key=lambda c: c[0], reverse=True)
+            top = cands[:NUM_BEAMS]
+
+            new_beams = []
+            for (cum_r, px, py, h, steer, vel, done, bi) in top:
+                parent = beams[bi]
+                new_beams.append([cum_r, px, py, h, steer, vel, done,
+                                   parent[7] + [px], parent[8] + [py]])
+            beams = new_beams
+
+            if beams[0][6]:
+                break
+
+        best = beams[0]
+        return np.array(best[7]), np.array(best[8])
+
     # --------------------------------------------------------- redraw
     def _redraw():
         _c1     = sl_c1.val
@@ -351,6 +561,7 @@ def plot_reward_heatmap_hourglass(
         _gmag = np.sqrt(gx**2 + gy**2)
         _scale = 1.5 / _gmag if _gmag > 1e-9 else 0.0
         grad_arrow.set_UVC(gy * _scale, gx * _scale)
+        grad_arrow.set_visible(chk_grad.get_status()[0])
         grad_text.set_text(f"∇r = ({gx:.2f}, {gy:.2f})")
         reward_text.set_text(f"r(robot) = {r_robot:.3f}")
         fig.canvas.draw_idle()
@@ -434,7 +645,28 @@ def plot_reward_heatmap_hourglass(
         0, 0, 0, 0,
         angles='xy', scale_units='xy', scale=1,
         color='lime', width=0.012, zorder=8,
+        edgecolors='black', linewidth=1.2,
     )
+
+    steering_arc, = ax.plot([], [], color='yellow', linewidth=1.5,
+                            linestyle='--', alpha=0.8, zorder=7)
+
+    def _update_steering_arc():
+        steering = state['steering']
+        if abs(steering) < 1e-4:
+            xs = np.array([0.0, 0.8])
+            ys = np.array([0.0, 0.0])
+        else:
+            R_turn = WHEELBASE / (2 * np.tan(steering))
+            ts = np.linspace(0, 0.8 / R_turn, 40)
+            xs = R_turn * np.sin(ts)
+            ys = R_turn * (1 - np.cos(ts))
+        steering_arc.set_data(ys, xs)
+
+    traj_glow, = ax.plot([], [], color='cyan',   linewidth=5,   alpha=0.35, zorder=8)
+    traj_line, = ax.plot([], [], color='white',  linewidth=1.8, linestyle='--', zorder=9)
+    beam_glow, = ax.plot([], [], color='orange', linewidth=5,   alpha=0.35, zorder=8)
+    beam_line, = ax.plot([], [], color='yellow', linewidth=1.8, linestyle='--', zorder=9)
 
     def _update_robot_markersize():
         # Convert ROBOT_WIDTH × ROBOT_LENGTH from data units to points at current zoom
@@ -492,13 +724,15 @@ def plot_reward_heatmap_hourglass(
         fontsize=12, fontweight='bold', rotation=0,
     )
 
+    _update_steering_arc()
     _redraw()
 
     # -------------------------------------------- slider callbacks
-    for sl in (sl_c1, sl_c2, sl_c3, sl_radius, sl_sx, sl_sy, sl_height, sl_clip, sl_ebx, sl_eby, sl_exp):
+    for sl in (sl_c1, sl_c2, sl_c3, sl_grad, sl_radius, sl_sx, sl_sy, sl_height, sl_lateral, sl_clip, sl_ebx, sl_eby, sl_exp):
         sl.on_changed(lambda _: _redraw())
     chk_bias.on_clicked(lambda _: _redraw())
     chk_shape.on_clicked(lambda _: _redraw())
+    chk_grad.on_clicked(lambda _: _redraw())
 
     # -------------------------------------------- click callback
     def _on_click(event):
@@ -508,39 +742,112 @@ def plot_reward_heatmap_hourglass(
         _redraw()
 
     # -------------------------------------------- keyboard callback
-    def _rotate(pos, angle):
-        c, s = np.cos(angle), np.sin(angle)
-        x, y = pos
-        return [c * x - s * y, s * x + c * y]
+    _MAX_STEER = 0.57  # RR100: ±0.57 rad (≈33°)
+
+    def _steer_limit(v):
+        if abs(v) < 1e-9:
+            return _MAX_STEER
+        return min(_MAX_STEER, float(np.arctan(WHEELBASE * LAT_ACCEL_LIMIT / (2 * v ** 2))))
+
+    def _arc_transform(pos, ds):
+        steering = state['steering']
+        if abs(steering) < 1e-6:
+            return [pos[0] - ds, pos[1]]
+        R_turn = WHEELBASE / (2 * np.tan(steering))
+        dtheta = ds / R_turn
+        c, s = np.cos(dtheta), np.sin(dtheta)
+        px = pos[0] - R_turn * s
+        py = pos[1] - R_turn * (1 - c)
+        return [c * px + s * py, -s * px + c * py]
+
+    def _update_chess_arc(ds):
+        steering = state['steering']
+        if abs(steering) < 1e-6:
+            phi = state['chess_phi']
+            state['chess_px'] += ds * np.cos(phi)
+            state['chess_py'] += ds * np.sin(phi)
+            return
+        R_turn = WHEELBASE / (2 * np.tan(steering))
+        dtheta = ds / R_turn
+        dx_r = R_turn * np.sin(dtheta)
+        dy_r = R_turn * (1 - np.cos(dtheta))
+        phi = state['chess_phi']
+        c, s = np.cos(phi), np.sin(phi)
+        state['chess_px']  += c * dx_r - s * dy_r
+        state['chess_py']  += s * dx_r + c * dy_r
+        state['chess_phi'] += dtheta
 
     def _on_key(event):
         key = event.key
         if key == 'w':
-            state['goal'][0]     -= linear_step
-            state['obstacle'][0] -= linear_step
-            state['chess_px']    += linear_step * np.cos(state['chess_phi'])
-            state['chess_py']    += linear_step * np.sin(state['chess_phi'])
+            state['goal']     = _arc_transform(state['goal'],     linear_step)
+            state['obstacle'] = _arc_transform(state['obstacle'], linear_step)
+            _update_chess_arc(linear_step)
         elif key == 'x':
-            state['goal'][0]     += linear_step
-            state['obstacle'][0] += linear_step
-            state['chess_px']    -= linear_step * np.cos(state['chess_phi'])
-            state['chess_py']    -= linear_step * np.sin(state['chess_phi'])
+            state['goal']     = _arc_transform(state['goal'],     -linear_step)
+            state['obstacle'] = _arc_transform(state['obstacle'], -linear_step)
+            _update_chess_arc(-linear_step)
         elif key == 'a':
-            state['theta']       -= angular_step
-            state['goal']         = _rotate(state['goal'],     -angular_step)
-            state['obstacle']     = _rotate(state['obstacle'], -angular_step)
-            state['chess_phi']   += angular_step
+            lim = _steer_limit(linear_step)
+            new = np.clip(state['steering'] + angular_step, -lim, lim)
+            state['steering'] = 0.0 if abs(new) < angular_step * 0.5 else new
+            _update_steering_arc()
+            fig.canvas.draw_idle()
+            return
         elif key == 'd':
-            state['theta']       += angular_step
-            state['goal']         = _rotate(state['goal'],     angular_step)
-            state['obstacle']     = _rotate(state['obstacle'], angular_step)
-            state['chess_phi']   -= angular_step
+            lim = _steer_limit(linear_step)
+            new = np.clip(state['steering'] - angular_step, -lim, lim)
+            state['steering'] = 0.0 if abs(new) < angular_step * 0.5 else new
+            _update_steering_arc()
+            fig.canvas.draw_idle()
+            return
+        elif key == 's':
+            state['steering'] = 0.0
+            _update_steering_arc()
+            fig.canvas.draw_idle()
+            return
+        elif key == 'm':
+            state['goal']      = list(goal)
+            state['obstacle']  = list(obstacle)
+            state['steering']  = 0.0
+            state['chess_px']  = 0.0
+            state['chess_py']  = 0.0
+            state['chess_phi'] = 0.0
+            traj_glow.set_data([], [])
+            traj_line.set_data([], [])
+            beam_glow.set_data([], [])
+            beam_line.set_data([], [])
+            _update_steering_arc()
         else:
             return
         _redraw()
 
     fig.canvas.mpl_connect('button_press_event', _on_click)
     fig.canvas.mpl_connect('key_press_event',    _on_key)
+
+    def _on_path_btn(_):
+        xs, ys = _run_gradient_path()
+        traj_glow.set_data(ys, xs)
+        traj_line.set_data(ys, xs)
+        fig.canvas.draw_idle()
+
+    def _on_beam_btn(_):
+        xs, ys = _run_beam_search_path()
+        beam_glow.set_data(ys, xs)
+        beam_line.set_data(ys, xs)
+        fig.canvas.draw_idle()
+
+    def _on_clear_btn(_):
+        traj_glow.set_data([], [])
+        traj_line.set_data([], [])
+        beam_glow.set_data([], [])
+        beam_line.set_data([], [])
+        fig.canvas.draw_idle()
+
+    btn_path.on_clicked(_on_path_btn)
+    btn_beam.on_clicked(_on_beam_btn)
+    btn_clear.on_clicked(_on_clear_btn)
+    fig._widgets = [btn_path, btn_beam, btn_clear]
 
     return fig
 

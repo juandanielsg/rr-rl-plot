@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Output files
+test
+episode*
+log*
+bowtie_vs_hourglass.md
+*wrapper*

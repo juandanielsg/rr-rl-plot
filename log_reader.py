@@ -166,16 +166,43 @@ class Plotter():
             whole_rewards      = [reward["reward"][0]           for reward in rewards]
             steps = np.arange(1, len(obstacle_penalties) + 1)
 
+            goal_rewards = [w - o for w, o in zip(whole_rewards, obstacle_penalties)]
+
             fig, ax = plt.subplots()
-            ax.plot(steps, obstacle_penalties, color='#ff7f0e', label="obstacle penalty")
-            ax.fill_between(steps, obstacle_penalties, alpha=0.2, color='#ff7f0e')
-            ax.plot(steps, whole_rewards, color='#1f77b4', label="reward")
-            ax.fill_between(steps, whole_rewards, alpha=0.5, color='#1f77b4')
-            ax.legend()
+            # ax.fill_between(steps, whole_rewards, alpha=0.5, color='#4C4C9D')
+            # ax.fill_between(steps, obstacle_penalties, alpha=0.35, color='#71A2B6')
+            ax.plot(steps, obstacle_penalties, color='#71A2B6', label="obstacle penalty",
+                    linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax.plot(steps, obstacle_penalties, lw=0, marker='o', markersize=3,
+                    markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                    label='_nolegend_')
+            ax.plot(steps, goal_rewards, color='#60B2E5', label="goal reward",
+                    linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax.plot(steps, goal_rewards, lw=0, marker='o', markersize=3,
+                    markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                    label='_nolegend_')
+            ax.plot(steps, whole_rewards, color='#4C4C9D', label="reward",
+                    linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax.plot(steps, whole_rewards, lw=0, marker='o', markersize=3,
+                    markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                    label='_nolegend_')
+            for s in range(20, len(steps) + 1, 20):
+                ax.axvline(x=s, color='gray', linewidth=0.7, alpha=0.5, linestyle='--')
+            ax.set_xticks(np.arange(20, len(steps) + 1, 20))
+            ax.legend(loc='lower right')
             plt.ylabel('Reward')
             plt.xlabel('Step')
         else:
-            plt.plot(np.arange(1, len(rewards) + 1), rewards)
+            steps = np.arange(1, len(rewards) + 1)
+            # plt.fill_between(steps, rewards, alpha=0.5, color='#4C4C9D')
+            plt.plot(steps, rewards, color='#4C4C9D', linewidth=2.5,
+                     marker='o', markersize=8, markevery=(19, 20))
+            plt.plot(steps, rewards, lw=0, marker='o', markersize=3,
+                     markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                     label='_nolegend_')
+            for s in range(20, len(steps) + 1, 20):
+                plt.axvline(x=s, color='gray', linewidth=0.7, alpha=0.5, linestyle='--')
+            plt.xticks(np.arange(20, len(steps) + 1, 20))
             plt.ylabel('Reward')
             plt.xlabel('Step')
 
@@ -382,13 +409,40 @@ class Plotter():
         if is_dict:
             obs_penalties = [r["obstacle_penalty"][0] for r in rewards]
             whole_rewards = [r["reward"][0]           for r in rewards]
-            ax0.plot(steps, obs_penalties, color="#ff7f0e", label="obstacle penalty")
-            ax0.fill_between(steps, obs_penalties, alpha=0.2, color="#ff7f0e")
-            ax0.plot(steps, whole_rewards, color="#1f77b4", label="reward")
-            ax0.fill_between(steps, whole_rewards, alpha=0.5, color="#1f77b4")
-            ax0.legend()
+            goal_rewards  = [w - o for w, o in zip(whole_rewards, obs_penalties)]
+            # ax0.fill_between(steps, whole_rewards, alpha=0.5, color="#4C4C9D")
+            # ax0.fill_between(steps, obs_penalties, alpha=0.35, color="#71A2B6")
+            ax0.plot(steps, obs_penalties, color="#71A2B6", label="obstacle penalty",
+                     linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax0.plot(steps, obs_penalties, lw=0, marker='o', markersize=3,
+                     markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                     label='_nolegend_')
+            ax0.plot(steps, goal_rewards, color="#60B2E5", label="goal reward",
+                     linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax0.plot(steps, goal_rewards, lw=0, marker='o', markersize=3,
+                     markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                     label='_nolegend_')
+            ax0.plot(steps, whole_rewards, color="#4C4C9D", label="reward",
+                     linewidth=2.5, marker='o', markersize=8, markevery=(19, 20))
+            ax0.plot(steps, whole_rewards, lw=0, marker='o', markersize=3,
+                     markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                     label='_nolegend_')
+            for s in range(20, len(steps) + 1, 20):
+                ax0.axvline(x=s, color='gray', linewidth=0.7, alpha=0.5, linestyle='--')
+            ax0.legend(loc='lower right')
         else:
-            ax0.plot(steps, values_reward, color="#1f77b4")
+            # ax0.fill_between(steps, values_reward, alpha=0.5, color="#4C4C9D")
+            ax0.plot(steps, values_reward, color="#4C4C9D", linewidth=2.5,
+                     marker='o', markersize=8, markevery=(19, 20))
+            ax0.plot(steps, values_reward, lw=0, marker='o', markersize=3,
+                     markevery=(19, 20), markerfacecolor='black', markeredgecolor='none',
+                     label='_nolegend_')
+            for s in range(20, len(steps) + 1, 20):
+                ax0.axvline(x=s, color='gray', linewidth=0.7, alpha=0.5, linestyle='--')
+        if success:
+            ax0.set_xticks(np.arange(20, len(steps) + 1, 20))
+        else:
+            ax0.set_xticks([20, len(steps)])
         ax0.set_ylabel("Reward")
         ax0.set_xlabel("Step")
         ax0.set_title("Reward evolution")
